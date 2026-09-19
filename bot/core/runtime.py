@@ -46,7 +46,11 @@ class Runtime:
             return
         self.repo.init()
         self.started=True
-        self.status.metadata.update({"dry_run": self.settings.dry_run, "device_serial": self.settings.device_serial or None})
+        self.status.metadata.update({
+            "dry_run": self.settings.dry_run,
+            "device_serial": self.settings.device_serial or None,
+            "recovery_attempts": 0,
+        })
         self.emit("system", {"message": "runtime ready"})
 
     async def stop(self):
@@ -60,6 +64,7 @@ class Runtime:
             return
         self.status.running=True
         self.status.last_error=None
+        self.status.metadata["recovery_attempts"]=0
         self.task=asyncio.create_task(self.machine.run(), name="clash-bot-runtime")
         self.emit("system", {"message": "bot started"})
 
@@ -80,12 +85,20 @@ class Runtime:
         if state == BotState.CONNECTING:
             self.status.connected=await self.adb.ensure_connected()
             await self.machine.transition(BotState.HOME if self.status.connected else BotState.RECOVERY)
+
         elif state == BotState.HOME:
             image=await self.adb.screenshot()
             detected=self.vision.detect_state(image)
-            await self.machine.transition(BotState.ARMY if detected in {"home","army","unknown"} else BotState.RECOVERY)
+            if self.settings.dry_run:
+                await self.machine.transition(BotState.ARMY)
+            else:
+                await self.machine.transition(
+                    BotState.ARMY if detected in {"home", "army"} else BotState.RECOVERY
+                )
+
         elif state == BotState.ARMY:
             await self.machine.transition(BotState.SEARCHING)
+
         elif state == BotState.SEARCHING:
             image=await self.adb.screenshot()
             if self.settings.dry_run and not self.settings.ocr_enabled:
@@ -96,20 +109,34 @@ class Runtime:
             self.emit("search", {"target": target.__dict__})
             if self.scorer.accept(target):
                 self.status.target=target
+                self.status.metadata["recovery_attempts"]=0
                 await self.machine.transition(BotState.BATTLE)
             else:
                 await self.attack.next_search()
+
         elif state == BotState.BATTLE:
             await self.attack.execute()
             self.status.attacks += 1
             self.emit("attack", {"count": self.status.attacks})
             await self.machine.transition(BotState.RESULT)
+
         elif state == BotState.RESULT:
             self.status.target=None
-            await asyncio.sleep(self.settings.result_delay)
+            await asyncio.sleep(max(0.0, self.settings.result_delay))
             await self.machine.transition(BotState.HOME)
+
         elif state == BotState.RECOVERY:
+            attempts=int(self.status.metadata.get("recovery_attempts", 0))+1
+            self.status.metadata["recovery_attempts"]=attempts
+            if attempts > self.settings.max_recovery:
+                self.status.last_error=self.status.last_error or "maximum recovery attempts exceeded"
+                self.emit("error", {"message": "maximum recovery attempts exceeded"})
+                self.status.running=False
+                self.status.state=BotState.STOPPED
+                self.machine.state=BotState.STOPPED
+                return
             await self.attack.recover()
             await self.machine.transition(BotState.CONNECTING)
+
         elif state == BotState.UNKNOWN:
             await self.machine.transition(BotState.RECOVERY)
