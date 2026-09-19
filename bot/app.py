@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from bot.api.routes import bind
@@ -19,6 +20,7 @@ def create_app(runtime=None):
         await runtime.stop()
 
     app = FastAPI(title="ISHClansOfClashBot", version="0.1.0", lifespan=lifespan)
+    app.mount("/static", StaticFiles(directory=BASE_DIR / "web"), name="static")
     app.include_router(bind(runtime), prefix="/api")
 
     @app.get("/", include_in_schema=False)
