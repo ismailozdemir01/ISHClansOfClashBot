@@ -2,90 +2,60 @@
 
 Full-stack Python automation framework for Clash of Clans using ADB, OpenCV template matching, optional Tesseract OCR, a state machine, target scoring, attack control, SQLite persistence, FastAPI and a browser dashboard.
 
-## Architecture
+## Finalized components
 
-```
-Android / Emulator -> ADB -> Vision + OCR -> State Machine
-                                      |-> Army
-                                      |-> Strategy
-                                      |-> Attack
-                                      -> SQLite
-                                      -> FastAPI + Web UI
-```
-
-## Implemented
-
-- ADB device discovery, screenshots, taps, swipes and back navigation.
-- Dry-run mode without an Android device.
-- OpenCV template matching.
-- Optional Tesseract OCR.
-- Explicit runtime states and recovery path.
-- Configurable target scoring and loot thresholds.
-- Async runtime with event history.
-- SQLite event persistence.
-- FastAPI API and dashboard.
-- WebSocket event stream.
-- Unit tests for persistence, runtime lifecycle and target scoring.
+- Async ADB client with discovery, screenshots and input primitives.
+- Deterministic dry-run mode without an Android device.
+- OpenCV template matching and optional Tesseract OCR.
+- Explicit state machine with state timeout and bounded recovery.
+- Configurable loot, confidence and Town Hall filters.
+- Army composition/queue primitives and attack planning.
+- SQLite event persistence and bounded in-memory history.
+- FastAPI health/status/device/event/start/stop endpoints.
+- Responsive polling dashboard.
+- Unit tests for input, persistence, runtime lifecycle, strategy and army queue behavior.
 
 ## Setup
 
 Python 3.11+:
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-python -m bot
-```
+    python -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+    cp .env.example .env
+    python -m bot
 
 Windows PowerShell:
 
-```powershell
-.venv\\Scripts\\Activate.ps1
-```
+    .venv\\Scripts\\Activate.ps1
 
-The dashboard is served by the application at the configured host/port.
+## Live-device calibration
+
+Live operation is calibration-driven. Add templates captured from the exact emulator/device profile:
+
+    assets/templates/
+      home.png
+      army.png
+      attack.png
+      result.png
+
+Coordinates in .env must match the configured resolution. Unknown live UI is routed to recovery rather than assumed to be HOME.
 
 ## Configuration
 
-Copy `.env.example` to `.env`.
-
-Key settings:
-
-- `BOT_DRY_RUN=true`: no ADB device required; uses a deterministic simulated target.
-- `BOT_DEVICE_SERIAL`: optional ADB serial.
-- `BOT_SCREEN_WIDTH` / `BOT_SCREEN_HEIGHT`: emulator resolution.
-- `BOT_SCREENSHOT_INTERVAL`: state-machine tick interval.
-- `BOT_DATABASE_URL`: SQLite database URL.
-- `BOT_TEMPLATE_DIR`: state-template directory.
-- `BOT_OCR_ENABLED`: enable Tesseract OCR.
-- `BOT_OCR_LANG`: OCR language.
-
-## Templates
-
-For live device operation, add calibrated templates:
-
-```
-assets/templates/
-  home.png
-  army.png
-  attack.png
-  result.png
-```
-
-Templates are device/resolution dependent and are intentionally not fabricated.
+Copy .env.example to .env. Important controls are BOT_DRY_RUN, BOT_DEVICE_SERIAL, BOT_SCREEN_WIDTH/HEIGHT, BOT_TEMPLATE_DIR, BOT_OCR_ENABLED/BOT_OCR_LANG, BOT_MIN_SCORE, BOT_MIN_GOLD, BOT_MIN_ELIXIR, BOT_MIN_DARK, BOT_MAX_TOWN_HALL, BOT_MAX_RECOVERY, BOT_ATTACK_UNIT_NAME/COUNT/SLOT and calibrated input coordinates.
 
 ## API
 
-- `GET /api/health`
-- `GET /api/status`
-- `GET /api/devices`
-- `GET /api/events?limit=50`
-- `POST /api/start`
-- `POST /api/stop`
-- `WS /ws/events`
+- GET /api/health
+- GET /api/status
+- GET /api/devices
+- GET /api/events?limit=50
+- POST /api/start
+- POST /api/stop
+
+The dashboard polls the API; there is no WebSocket dependency.
 
 ## Validation boundary
 
-The repository now contains the executable application structure and unit tests, but live game interaction still requires device-specific visual calibration. The GitHub Actions CI workflow is intentionally left for the final step, as requested.
+The application layer is finalized on the feature branch. External validation still requires the actual target emulator/device and calibrated visual assets. GitHub Actions CI is intentionally left as the final separate step.
