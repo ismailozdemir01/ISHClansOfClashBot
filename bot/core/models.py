@@ -24,6 +24,7 @@ class Target:
     elixir: int = 0
     dark_elixir: int = 0
     trophies: int = 0
+    town_hall: int | None = None
     confidence: float = 0.0
     score: float = 0.0
 
