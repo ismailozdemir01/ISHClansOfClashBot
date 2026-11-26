@@ -1,0 +1,142 @@
+import asyncio
+import logging
+from bot.core.config import get_settings
+from bot.core.events import EventBus
+from bot.core.logging import configure_logging
+from bot.core.models import BotState, RuntimeStatus, Target
+from bot.core.state_machine import StateMachine
+from bot.adb.client import AdbClient
+from bot.vision.pipeline import VisionPipeline
+from bot.strategy.target import TargetScorer
+from bot.strategy.config import StrategyConfig
+from bot.attack.controller import AttackController
+from bot.storage.repository import Repository
+
+log=logging.getLogger(__name__)
+
+class Runtime:
+    def __init__(self, settings=None):
+        configure_logging()
+        self.settings=settings or get_settings()
+        self.events=EventBus()
+        self.status=RuntimeStatus()
+        self.adb=AdbClient(self.settings)
+        self.vision=VisionPipeline(self.settings)
+        self.scorer=TargetScorer(StrategyConfig(
+            min_score=self.settings.min_score,
+            min_confidence=self.settings.min_confidence,
+            min_gold=self.settings.min_gold,
+            min_elixir=self.settings.min_elixir,
+            min_dark=self.settings.min_dark,
+            max_town_hall=self.settings.max_town_hall,
+        ))
+        self.repo=Repository(self.settings.database_url)
+        self.attack=AttackController(self)
+        self.machine=StateMachine(self)
+        self.task=None
+        self.started=False
+
+    def emit(self, kind, payload):
+        event=self.events.publish(kind, payload)
+        self.repo.log_event(kind, payload)
+        return event
+
+    async def start(self):
+        if self.started:
+            return
+        self.repo.init()
+        self.started=True
+        self.status.metadata.update({
+            "dry_run": self.settings.dry_run,
+            "device_serial": self.settings.device_serial or None,
+            "recovery_attempts": 0,
+        })
+        self.emit("system", {"message": "runtime ready"})
+
+    async def stop(self):
+        await self.stop_bot()
+        self.started=False
+
+    async def start_bot(self):
+        if not self.started:
+            await self.start()
+        if self.status.running:
+            return
+        self.status.running=True
+        self.status.last_error=None
+        self.status.metadata["recovery_attempts"]=0
+        self.task=asyncio.create_task(self.machine.run(), name="clash-bot-runtime")
+        self.emit("system", {"message": "bot started"})
+
+    async def stop_bot(self):
+        self.status.running=False
+        if self.task:
+            self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+            self.task=None
+        self.status.state=BotState.STOPPED
+        self.machine.state=BotState.STOPPED
+        self.emit("system", {"message": "bot stopped"})
+
+    async def tick(self, state):
+        if state == BotState.CONNECTING:
+            self.status.connected=await self.adb.ensure_connected()
+            await self.machine.transition(BotState.HOME if self.status.connected else BotState.RECOVERY)
+
+        elif state == BotState.HOME:
+            image=await self.adb.screenshot()
+            detected=self.vision.detect_state(image)
+            if self.settings.dry_run:
+                await self.machine.transition(BotState.ARMY)
+            else:
+                await self.machine.transition(
+                    BotState.ARMY if detected in {"home", "army"} else BotState.RECOVERY
+                )
+
+        elif state == BotState.ARMY:
+            await self.machine.transition(BotState.SEARCHING)
+
+        elif state == BotState.SEARCHING:
+            image=await self.adb.screenshot()
+            if self.settings.dry_run and not self.settings.ocr_enabled:
+                target=Target(gold=250000, elixir=220000, dark_elixir=1500, trophies=25, confidence=1.0)
+            else:
+                target=self.scorer.extract_target(image, self.vision)
+            self.status.searches += 1
+            self.emit("search", {"target": target.__dict__})
+            if self.scorer.accept(target):
+                self.status.target=target
+                self.status.metadata["recovery_attempts"]=0
+                await self.machine.transition(BotState.BATTLE)
+            else:
+                await self.attack.next_search()
+
+        elif state == BotState.BATTLE:
+            await self.attack.execute()
+            self.status.attacks += 1
+            self.emit("attack", {"count": self.status.attacks})
+            await self.machine.transition(BotState.RESULT)
+
+        elif state == BotState.RESULT:
+            self.status.target=None
+            await asyncio.sleep(max(0.0, self.settings.result_delay))
+            await self.machine.transition(BotState.HOME)
+
+        elif state == BotState.RECOVERY:
+            attempts=int(self.status.metadata.get("recovery_attempts", 0))+1
+            self.status.metadata["recovery_attempts"]=attempts
+            if attempts > self.settings.max_recovery:
+                self.status.last_error=self.status.last_error or "maximum recovery attempts exceeded"
+                self.emit("error", {"message": "maximum recovery attempts exceeded"})
+                self.status.running=False
+                self.status.state=BotState.STOPPED
+                self.machine.state=BotState.STOPPED
+                return
+            await self.attack.recover()
+            await self.machine.transition(BotState.CONNECTING)
+
+        elif state == BotState.UNKNOWN:
+            await self.machine.transition(BotState.RECOVERY)
