@@ -1,7 +1,9 @@
 from functools import lru_cache
 from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
     name: str = Field("ISHClansOfClashBot", alias="BOT_NAME")
@@ -35,7 +37,15 @@ class Settings(BaseSettings):
     min_dark: int = Field(0, alias="BOT_MIN_DARK")
     max_town_hall: int | None = Field(None, alias="BOT_MAX_TOWN_HALL")
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
+    # Blank optional values in .env (for example BOT_MAX_TOWN_HALL=)
+    # are treated as unset so Pydantic uses the field default.
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_ignore_empty=True,
+        extra="ignore",
+        populate_by_name=True,
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:
